@@ -4,8 +4,8 @@ import zipfile
 from io import BytesIO, TextIOWrapper
 from openpyxl import Workbook
 
-st.set_page_config(page_title="Filtro ZIP eficiente", layout="wide")
-st.title("📦 Filtro de múltiples CSV desde ZIP (Optimizado para archivos grandes)")
+st.set_page_config(page_title="📦 Catálogo de Filtros desde ZIP", layout="wide")
+st.title("📦 Extraer todas las opciones únicas desde varios CSV")
 
 # --- Configuración ---
 st.sidebar.header("⚙️ Configuración")
@@ -28,75 +28,41 @@ try:
     if not csv_files:
         st.error("No se encontraron archivos CSV dentro del ZIP.")
         st.stop()
-    st.success(f"Se encontraron {len(csv_files)} archivos CSV.")
+    st.success(f"✅ Se encontraron {len(csv_files)} archivos CSV.")
 except Exception as e:
     st.error(f"Error al leer el ZIP: {e}")
     st.stop()
 
-# --- Tomar un archivo pequeño para generar listas de filtros ---
-muestra = None
-for file_name in csv_files:
-    try:
-        with z.open(file_name) as f:
-            df = pd.read_csv(TextIOWrapper(f, encoding=encoding_opcion), nrows=5000)
-            if all(c in df.columns for c in ["Entidad", "Modalidad", "Ciclo", "Cultivo"]):
-                muestra = df
-                break
-    except Exception:
-        continue
+# --- Variables acumuladoras de valores únicos ---
+entidades = set()
+modalidades = set()
+ciclos = set()
+cultivos = set()
 
-if muestra is None:
-    st.error("Ningún archivo contiene las columnas requeridas (Entidad, Modalidad, Ciclo, Cultivo).")
-    st.stop()
+st.write("📊 Analizando archivos para obtener todas las opciones únicas...")
 
-# --- Crear filtros dinámicos ---
-st.sidebar.header("🎯 Filtros")
-
-entidad_sel = st.sidebar.multiselect(
-    "Entidad", sorted(muestra["Entidad"].dropna().unique().tolist())
-)
-modalidad_sel = st.sidebar.multiselect(
-    "Modalidad", sorted(muestra["Modalidad"].dropna().unique().tolist())
-)
-ciclo_sel = st.sidebar.multiselect(
-    "Ciclo", sorted(muestra["Ciclo"].dropna().unique().tolist())
-)
-cultivo_sel = st.sidebar.multiselect(
-    "Cultivo", sorted(muestra["Cultivo"].dropna().unique().tolist())
-)
-
-# --- Generar archivo Excel final ---
-st.write("📊 Procesando archivos... (esto puede tardar unos minutos con archivos grandes)")
-
-wb = Workbook()
-wb.remove(wb.active)
-
+# --- Recorrer cada CSV ---
 procesados = 0
 for file_name in csv_files:
     try:
         with z.open(file_name) as f:
-            df = pd.read_csv(TextIOWrapper(f, encoding=encoding_opcion))
-            if not all(c in df.columns for c in ["Entidad", "Modalidad", "Ciclo", "Cultivo"]):
+            df = pd.read_csv(TextIOWrapper(f, encoding=encoding_opcion), usecols=lambda x: x in ["Entidad", "Modalidad", "Ciclo", "Cultivo"], low_memory=False)
+            df.columns = df.columns.str.strip()
+
+            # Verificar columnas
+            columnas_presentes = [c for c in ["Entidad", "Modalidad", "Ciclo", "Cultivo"] if c in df.columns]
+            if not columnas_presentes:
                 continue
 
-            # --- Aplicar filtros ---
-            if entidad_sel:
-                df = df[df["Entidad"].isin(entidad_sel)]
-            if modalidad_sel:
-                df = df[df["Modalidad"].isin(modalidad_sel)]
-            if ciclo_sel:
-                df = df[df["Ciclo"].isin(ciclo_sel)]
-            if cultivo_sel:
-                df = df[df["Cultivo"].isin(cultivo_sel)]
-
-            if len(df) == 0:
-                continue
-
-            # --- Agregar hoja al Excel ---
-            ws = wb.create_sheet(title=file_name.replace(".csv", "")[:31])
-            ws.append(list(df.columns))
-            for row in df.itertuples(index=False):
-                ws.append(row)
+            # Guardar valores únicos
+            if "Entidad" in df.columns:
+                entidades.update(df["Entidad"].dropna().unique().tolist())
+            if "Modalidad" in df.columns:
+                modalidades.update(df["Modalidad"].dropna().unique().tolist())
+            if "Ciclo" in df.columns:
+                ciclos.update(df["Ciclo"].dropna().unique().tolist())
+            if "Cultivo" in df.columns:
+                cultivos.update(df["Cultivo"].dropna().unique().tolist())
 
             procesados += 1
 
@@ -104,17 +70,36 @@ for file_name in csv_files:
         st.warning(f"⚠️ Error procesando {file_name}: {e}")
 
 if procesados == 0:
-    st.warning("Ningún archivo cumplió con los filtros seleccionados.")
+    st.error("Ningún archivo contenía las columnas requeridas (Entidad, Modalidad, Ciclo, Cultivo).")
     st.stop()
+
+# --- Crear DataFrame resumen ---
+data = {
+    "Entidad": sorted(entidades),
+    "Modalidad": sorted(modalidades),
+    "Ciclo": sorted(ciclos),
+    "Cultivo": sorted(cultivos)
+}
+
+# Crear hojas separadas para cada catálogo
+wb = Workbook()
+wb.remove(wb.active)
+
+for key, values in data.items():
+    ws = wb.create_sheet(title=key)
+    ws.append([key])
+    for v in values:
+        ws.append([v])
 
 # --- Descargar resultado ---
 output = BytesIO()
 wb.save(output)
+
 st.download_button(
-    label="📥 Descargar Excel filtrado",
+    label="📥 Descargar Excel con todas las opciones únicas",
     data=output.getvalue(),
-    file_name="filtrado_resultados.xlsx",
+    file_name="catalogos_unicos.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-st.success(f"✅ {procesados} archivos procesados correctamente.")
+st.success(f"✅ Catálogo generado correctamente con datos de {procesados} archivos.")
